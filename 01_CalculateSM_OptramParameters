@@ -1,0 +1,360 @@
+
+//######################################################################################
+//#### Kent State University - SenslandLab - 2025 ####
+//### Esmaeel Adrah eadrah@kent.edu ###
+// This code calculate OPTRAM SM (Sadeghi et. al 2017) parameters for any landsat footprint (defined by WRS Path and Row)
+//  it step wise SRT -NDVI relationship to fit a linear model and calculate the OPTRAM parameters for each year (uses 2 years data)
+// The output is a feature collection with the parameters 'iw','id','sd', 'sw','vw','wv'for each year 2000-2024
+//######################################################################################
+// if the computation timed out or two many concurrent error showed up; shorten the year list and export parameters in chuncks
+
+
+
+// 1. Calculate parameters for the specific year
+// 2. inserts params manually and check
+// 3. get the size of the collection
+// 4. Export
+
+  
+var Prdays = 5 // number of days to consider before last rainfall (to avoid saturated pixels)
+var WRS_Path = 175;
+var WRS_Row = 35;
+// var size = 33
+
+
+var CalcParams = true
+
+var ExportSM = false
+
+
+var showExtraOutput = false
+var index = 5 // test index
+
+
+
+// var year = 2015
+
+var years = [2000,2001,2002,2003,2004,2005,2006,2007,2008,2009,2010,2011,
+2012,2013,2014,2015,2016,2017,2018,2019,2020,2021,2022,2023,2024]
+var createFeature = function (yearfeat) {
+var year = ee.Number(yearfeat)
+return ee.Feature(null, {'year': year})
+}
+var fc = ee.FeatureCollection(years.map(createFeature))
+print(fc)
+
+  // Get the 6 values for the current year
+
+
+function doAn (feat) {
+  var year = feat
+//######################################################################################
+var start_year = year;  //these are inclusive
+var end_year = year; // this is included too
+
+var Prdays = 5 // number of days before last rain to consider (to exclude increase of soil moisture due to rain)
+var METHOD = 'OptramGlobalCloud'  // default OPTRAM GLOBAL NDVI
+// this is the method to calibrate OPTRAM
+// Avaialbe methods://1- OptramDynamicNDVI ,2- OptramGlobalNDVI, 3- OptramGlobalSmap, 4-OptramSynamicSmap, 5- OptramGlobalCloud
+
+
+
+//######################################################################################
+// 1. Get landdat collection for the specific path, raw and year
+var Collection = PrepareLandsat45789(start_year, end_year, WRS_Path, WRS_Row)
+var LandsatFootprintGeom = Collection.first().geometry()
+var LandsatFootprintMask = ee.Image(1).clip(LandsatFootprintGeom)
+// Map.centerObject(LandsatFootprintMask,10)
+                  ////////////   ** --- **   \\\\\\\\\\\\\\\\\\\\\\\
+                  
+                  
+// 2. Get NDVI and STR from the collection to make it optram ready
+var OPTRAM_ReadyCollection =  Collection.map(OPTRAM_Ready)
+
+                  ////////////   ** --- **   \\\\\\\\\\\\\\\\\\\\\\\
+                  
+                  
+// 3. Add matched CHIRPS precipitation for each scene 
+
+ OPTRAM_ReadyCollection = OPTRAM_ReadyCollection.map(MatchedSM_leftPr)
+
+
+
+                  ////////////   ** --- **   \\\\\\\\\\\\\\\\\\\\\\\
+                  
+                  
+// 4. Define helper masks
+// Define a Mask for only areas of vegetaion to determine wet and dry edges within
+// Get landcover 2020 ESA/WorldCover/v100 to exclude urban and water, Tree
+var WC_ESA = ee.ImageCollection("ESA/WorldCover/v100").first(); 
+var NotMask = WC_ESA.neq(50).and(WC_ESA.neq(80)).and(WC_ESA.neq(10));
+var cropMask = WC_ESA.eq(40) // used only for parametrization not masking the image
+// Get GLC cropmask for the corresponding year
+if (start_year >= 2021) {
+var yearband = start_year - 1999 - 2
+  } else {
+ yearband = start_year - 1999 
+  }
+var GLC = ee.ImageCollection("projects/sat-io/open-datasets/GLC-FCS30D/annual").mosaic().select("b" + yearband);
+var rainfedMask = GLC.eq(10)
+var irrigatedMask = GLC.eq(20)
+var GLCcropMask = irrigatedMask.or(rainfedMask)
+                  ////////////   ** --- **   \\\\\\\\\\\\\\\\\\\\\\\
+                  
+                  
+
+//5.1 Calculate Optram Global parameter 
+var params = CalculateOPTRAMGlobalParams(OPTRAM_ReadyCollection)
+//5.2 check and update params if needed
+// params = checkParam(params)
+
+  // Create a feature for this year's results
+
+var Optram_SM = OPTRAM_ReadyCollection.map(CalcOptramSM)
+
+
+
+
+ Optram_SM = Optram_SM.filter(ee.Filter.calendarRange(start_year, end_year,'year'))
+
+
+
+
+//######################################################################################
+//###############   \\        //    ####################################################
+//###############     FUNCTIONS     ####################################################
+//###############   //         \\   ####################################################
+//######################################################################################
+//###############   prepare Landsat  ####################################################
+
+// get all landsat in one collection
+function PrepareLandsat45789 (StartYear, EndYear, WRS_Path, WRS_Row){
+    // filter
+    function filterCollection (collection){
+      return collection.filter(ee.Filter.calendarRange(StartYear-1, EndYear,'year'))
+         .filter(ee.Filter.eq('WRS_PATH', WRS_Path))
+         .filter(ee.Filter.eq('WRS_ROW', WRS_Row))
+         .filter(ee.Filter.lt('CLOUD_COVER',75))
+    }
+
+    var landsat_4 = filterCollection(ee.ImageCollection('LANDSAT/LT04/C02/T1_L2'))
+         .select(['SR_B1','SR_B2','SR_B3','SR_B4','SR_B5','SR_B7','QA_PIXEL','QA_RADSAT']) 
+        // .map(ETM_to_OLI)
+         .map(function(im){ return im.set({'Landsat': 'L4'})});
+    var landsat_5 = filterCollection(ee.ImageCollection('LANDSAT/LT05/C02/T1_L2')) 
+         .select(['SR_B1','SR_B2','SR_B3','SR_B4','SR_B5','SR_B7','QA_PIXEL','QA_RADSAT']) 
+       //  .map(ETM_to_OLI)
+         .map(function(im){ return im.set({'Landsat': 'L5'})});
+    var landsat_7 = filterCollection(ee.ImageCollection('LANDSAT/LE07/C02/T1_L2')) 
+         .filter(ee.Filter.calendarRange(1999, 2017,'year')) // exclude faulty scenes after 2021
+         .select(['SR_B1','SR_B2','SR_B3','SR_B4','SR_B5','SR_B7','QA_PIXEL','QA_RADSAT']) 
+       //  .map(ETM_to_OLI)
+         .map(function(im){ return im.set({'Landsat': 'L7'})});
+    var landsat_8 = filterCollection(ee.ImageCollection('LANDSAT/LC08/C02/T1_L2')) 
+         .select(['SR_B2','SR_B3','SR_B4','SR_B5','SR_B6','SR_B7','QA_PIXEL','QA_RADSAT'],['SR_B1','SR_B2','SR_B3','SR_B4','SR_B5','SR_B7','QA_PIXEL','QA_RADSAT']) 
+         .map(function(im){ return im.set({'Landsat': 'L8'})});
+    var landsat_9 = filterCollection(ee.ImageCollection('LANDSAT/LC09/C02/T1_L2')) 
+         .select(['SR_B2','SR_B3','SR_B4','SR_B5','SR_B6','SR_B7','QA_PIXEL','QA_RADSAT'],['SR_B1','SR_B2','SR_B3','SR_B4','SR_B5','SR_B7','QA_PIXEL','QA_RADSAT']) 
+         .map(function(im){ return im.set({'Landsat': 'L9'})});
+    var merged = ee.ImageCollection(landsat_9.merge(landsat_8).merge(landsat_7).merge(landsat_4).merge(landsat_5))
+                  .map(QualityMask)
+                  .select(['SR_B1','SR_B2','SR_B3','SR_B4','SR_B5','SR_B7'],['blue','green','red','nir','swir1','swir2'])
+                  
+    return merged ;
+}
+
+// function to mask cloudy, shadowy and low quality pixels + scale bands
+function QualityMask (img){
+    var qa = img.select('QA_PIXEL');
+    var saturation = img.select("QA_RADSAT").eq(0);
+    var bitwiseMask = ee.Image(0)
+                            .or(qa.bitwiseAnd(1 << 0)) // filled value
+                            .or(qa.bitwiseAnd(1 << 1)) // dialated cloud
+                            .or(qa.bitwiseAnd(1 << 2)) // cirrus
+                            .or(qa.bitwiseAnd(1 << 3)) // cloud
+                            .or(qa.bitwiseAnd(1 << 4)) // shadow
+                            .or(qa.bitwiseAnd(1 << 5)) // snow
+                            .or(qa.bitwiseAnd(1 << 9).and(qa.bitwiseAnd(1 << 10))) //combination of Bits 8-11
+                            .or(qa.bitwiseAnd(1 << 8).and(qa.bitwiseAnd(1 << 11)))
+                            .or(qa.bitwiseAnd(1 << 9).and(qa.bitwiseAnd(1 << 11)))
+                            .not()
+    var scaeledBands = img.select("SR_B.").multiply(0.0000275).add(-0.2);
+    return scaeledBands.updateMask(bitwiseMask.and(saturation)).set({
+        "system:time_start": img.get("system:time_start"),
+        "system:index": img.get("system:index"),
+      "Landsat": img.get("Landsat")
+    })
+}
+
+
+// function for L7 ETM  L8 OLI harmonization using coefficents from Roy, D.P. et al 2018
+function ETM_to_OLI (img){
+    var ETM = img.select("SR_B.");
+    // regression line for reflectance OLI  = A * ETM (resampled) + B (scaled 10000)
+    var A = ee.Image.constant([0.9785, 0.9542, 0.9825, 1.0073, 1.0171, 0.9949]);
+    var B = ee.Image.constant([-0.0095, -0.0016, -0.0022, -0.0021, -0.0030, 0.0029]);
+    var OLI = (ETM.resample('bicubic').multiply(A)).add(B.multiply(10000)).set({
+        "system:time_start": ETM.get("system:time_start"),
+        "system:index": ETM.get("system:index")})
+    return OLI.addBands(img.select(['QA_PIXEL','QA_RADSAT']));
+}
+
+
+// Map.centerObject(LandsatFootprintMask,8)
+
+
+
+//###############   prepare OPTRAM ready Collection  ####################################################
+
+// function to add ndvi, and STR (for OPTRAM parameters)
+function OPTRAM_Ready (img) {
+    var ndvi = img.normalizedDifference(["nir", "red"]).rename("ndvi").float();
+    var Rswir = img.select('swir1').rename('Rswir');
+    var STR = img.expression('((Rswir -1) * (Rswir -1))/ (2 * Rswir)',
+                            {'Rswir': Rswir}).rename('STR');
+      return ee.Image.cat(ndvi,STR)
+                            .copyProperties(img, img.propertyNames())
+}
+
+
+
+
+
+//###############   Find PR that match landsat  and add it ####################################################  
+
+
+
+function MatchedSM_leftPr (im){
+var dateL = ee.Date(im.get('system:time_start'))
+var start_year = year;  //these are inclusive
+var end_year = year; // this is included too
+
+var precipitationColl = ee.ImageCollection('UCSB-CHG/CHIRPS/DAILY')
+                  .filter(ee.Filter.date(start_year-2+'-12-1', end_year+'-12-31'))
+                  .select(['precipitation'],['pr'])
+                  
+                  
+ var matchesPr = precipitationColl
+    .filter(ee.Filter.lte('system:time_start', dateL.millis()))
+    .filter(ee.Filter.gt('system:time_start', dateL.millis().subtract(Prdays * 24 * 60 * 60 * 1000))) // consider only last n days
+    .sort('system:time_start',false).sum().updateMask(LandsatFootprintMask);  
+     
+return  ee.Image.cat(im,matchesPr)      
+                .copyProperties(im, im.propertyNames())
+
+}
+
+//###############    Calculate OPTRAM parameters  ####################################################  
+
+// 5 Method 5: Try parampetrization using NDVI and STR only - global by taking steps
+
+
+  /////////////////////////////////////////////////////////////////////////////////
+// global parametrization
+function CalculateOPTRAMGlobalParams(collection){
+  // Mask all rain (saturated), urban and water pixels // try also only veg!
+var optram0 = collection.map(function(img){
+  return img.updateMask(img.select('STR')).updateMask(NotMask).updateMask(GLCcropMask)
+.updateMask(img.select('pr').lte(0.5))
+}).median().select(['ndvi','STR'])
+ 
+// step1 0.2-0.3 step2  0.3-0.4 ..... step 0.6-0.7
+var step1 = optram0.updateMask(optram0.select('ndvi').gte(0.2).and(optram0.select('ndvi').lt(0.3)))
+var step2 = optram0.updateMask(optram0.select('ndvi').gte(0.3).and(optram0.select('ndvi').lt(0.4)))
+var step3 = optram0.updateMask(optram0.select('ndvi').gte(0.4).and(optram0.select('ndvi').lt(0.5)))
+var step4 = optram0.updateMask(optram0.select('ndvi').gte(0.5).and(optram0.select('ndvi').lt(0.6)))
+var step5 = optram0.updateMask(optram0.select('ndvi').gte(0.6).and(optram0.select('ndvi').lte(0.7)))
+
+function EdgesCloud(step){
+  var StepMinMax = step.select('STR')
+.reduceRegion({reducer:  ee.Reducer.percentile([5,95]), geometry: LandsatFootprintGeom, scale: 30,maxPixels: 1e13//,bestEffort: true,max
+            })  
+var wetedgeMaskValue = ee.Number(StepMinMax.get('STR_p95'))
+var dryedgeMaskValue = ee.Number(StepMinMax.get('STR_p5'))  
+var wetedgecloudStep = step.updateMask(step.select('STR').gte(wetedgeMaskValue))
+var dryedgecloudStep = step.updateMask(step.select('STR').lte(dryedgeMaskValue))
+
+return ee.List([wetedgecloudStep,dryedgecloudStep])
+}
+
+var wetedgecloudAllsteps = ee.ImageCollection([EdgesCloud(step1).get(0), EdgesCloud(step2).get(0), EdgesCloud(step3).get(0), EdgesCloud(step4).get(0),EdgesCloud(step5).get(0)]).mosaic()
+var dryedgecloudAllsteps = ee.ImageCollection([EdgesCloud(step1).get(1), EdgesCloud(step2).get(1), EdgesCloud(step3).get(1), EdgesCloud(step4).get(1),EdgesCloud(step5).get(1)]).mosaic()
+
+
+// calculate wet and dry edges using linear fit
+var linearFit_WetEdge = wetedgecloudAllsteps.select(['ndvi', 'STR'])
+          .reduceRegion({reducer: ee.Reducer.linearFit(),geometry: LandsatFootprintGeom,scale: 30,maxPixels: 1e13
+            })
+
+var sw = ee.Number(linearFit_WetEdge.values().get(1))
+var iw = ee.Number(linearFit_WetEdge.values().get(0))
+var vw = iw.add(sw)
+
+var linearFit_DryEdge = dryedgecloudAllsteps.select(['ndvi', 'STR'])
+          .reduceRegion({reducer: ee.Reducer.linearFit(),geometry: LandsatFootprintGeom,scale: 30,maxPixels: 1e13
+            }) // scale(slope)=sd + offeset = id 
+// print(linearFit_DryEdge, 'dry edge parameter scale(slope)=sd + offeset = id ')
+var sd = ee.Number(linearFit_DryEdge.values().get(1))
+var id = ee.Number(linearFit_DryEdge.values().get(0))
+var wv = ee.Number(id).add(sd)
+
+
+return  ee.List([iw,id,sd,sw,vw,wv])
+
+}
+
+
+
+function CalcOptramSM (img){
+ img = img.updateMask(img.select('STR')).updateMask(NotMask); // water urban and tree only
+var iw = ee.Number(params.get(0))
+var id = ee.Number(params.get(1))
+var sd = ee.Number(params.get(2))
+var sw = ee.Number(params.get(3))
+// calculate sm OPTRAM
+var Optram_SM = img
+.expression('(id + sd * ndvi - STR)/(id - iw + (sd - sw) * ndvi)',{
+    'id': id, 'sd': sd, 'ndvi': img.select('ndvi'), 'STR': img.select('STR'), 'iw': iw, 'sw': sw
+    }).rename('Optram_SM')
+    
+img = img.select(['ndvi','STR','pr'])
+  return ee.Image.cat(img,Optram_SM)
+                            .copyProperties(img, img.propertyNames());
+                            //.set({'Calibration':ok, 'degredationFlag': ok3, })
+}
+  
+//###############    Export                    ####################################################  
+
+var size = ee.Number(Optram_SM.size())
+  return ee.Feature(null,{'year':year,
+    'wrs_path':WRS_Path,
+    'wrs_row':WRS_Row,
+    'iw': ee.Number(params.get(0)),
+    'id': ee.Number(params.get(1)),
+    'sd': ee.Number(params.get(2)),
+    'sw': ee.Number(params.get(3)),
+    'vw': ee.Number(params.get(4)),
+    'wv': ee.Number(params.get(5)),
+   'size': size
+  });}
+
+
+var test = 2000//ee.Feature(null,{'year':2000})
+
+var t = doAn(test)
+print(t)
+var resultsList = years.map(doAn)
+// --- 4. Convert the list of features into an ee.FeatureCollection ---
+var outputFeatureCollection = ee.FeatureCollection(resultsList);
+
+print('Multi-Year Analysis Results:', outputFeatureCollection);
+print('First feature:', outputFeatureCollection.first()); // Print the first feature for inspection
+
+  
+Export.table.toDrive({
+  collection: outputFeatureCollection,
+  description: 'Data_'+WRS_Path+''+WRS_Row+'',
+  fileFormat: 'CSV'
+
+})
+
