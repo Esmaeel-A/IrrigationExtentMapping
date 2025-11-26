@@ -3,7 +3,7 @@
 Scripts implementing a full Google Earth Engine workflow for mapping irrigation extent using Landsat imagery and OPTRAM soil moisture (Sadeghi et al., 2017), without relying on training data.
 The workflow is modular, allowing you to run the entire pipeline or individual steps depending on your needs.
 
-Overview
+#Overview
 
 This repository provides tools to:
 
@@ -19,7 +19,7 @@ Design and run accuracy assessments
 
 All scripts are written for use in Google Earth Engine (GEE).
 
-Repository Structure
+#Repository Structure
 01_CalculateSM_OptramParameters
 
 Calculates OPTRAM soil-moisture parameters for a specified WRS Path/Row.
