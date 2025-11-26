@@ -95,4 +95,3 @@ See LICENSE.md for terms of use.
 # Summary
 
 This repository provides a complete, reproducible workflow for mapping irrigation extent using OPTRAM soil moisture and Landsat time series without training data.
-Each step can be run independently, or the full pipeline can be executed end-to-end depending on your needs.
