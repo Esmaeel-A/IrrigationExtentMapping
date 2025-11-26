@@ -1,0 +1,553 @@
+
+
+
+//######################################################################################
+//#### Kent State University - SenslandLab - 2025 ####
+//### Esmaeel Adrah eadrah@kent.edu ###
+// This code map irrigation extent by calculating two irrigation indicators from OPTRAM SM for any landsat footprint (defined by WRS Path and Row)
+//  it requires either a file containing the parameters calculated in step 01 to calculate SM on the fly or the collection containing SM calculated in step 02
+// The output is a yearly raster with four possible values 0 >> not irrigated,1 >> irrigated in summer ,2 >> irrigated all years,3 >> irrigated in winter
+//######################################################################################
+
+
+
+
+// winter October to march 10-1', year+'-3-1 
+// summer only July and august (this only overlap with lugum)
+// winter are the one not irrigated in summer
+ // wrs_path: 170
+// wrs_row: 34, 35, 36, 37, 38
+// wrs_path: 171
+// wrs_row: 34, 35, 36, 37, 38
+// wrs_path: 172
+// wrs_row: 34, 35, 36, 37, 38
+// wrs_path: 173
+// wrs_row: 34, 35, 36, 37, 38
+// wrs_path: 174
+// wrs_row: 34, 35, 36, 37, 38
+// wrs_path: 175
+// wrs_row: 34, 35, 36, 37
+
+var soilMoisturePalette = ['brown', 'orange', 'yellow', 'green', 'blue'];
+
+
+// Irrigation indicators threshold
+//counting an event 1-soil moisture should be higher than 
+var SMthreshold = 0.2
+//2- the increase is larger than 10
+var increasethreshold = 0.1
+//3- number of observed image is equal or greater tahn 3
+var lengththreshold = 3
+
+// number of detected events per season to consider it irrigated
+var Irr_threshold = 1
+
+var WRS_Path = 170;
+var WRS_Row = 34;
+
+
+// var years = [2000,2001,2002,2003,2004,2005,2006,2007,2008,2009,2010,2011,
+// 2012,2013,2014,2015,2016,2017,2018,2019,2020,2021,2022,2023,2024]
+// var test = doAn(2001)
+// // print(test.get('year').toString())
+// var listOfImage = ee.List(years.map(doAn))
+
+// var collection = ee.ImageCollection(listOfImage)
+
+// print(listOfImage)
+
+for (var i = 2000; i < 2025; i++) {
+  var img = doAn(i)
+    // var img = ee.Image(listOfImage.get(i));
+    // var year_id = img.get('year')
+
+    Export.image.toAsset({
+      image: img,
+    description: 'Irr_'+WRS_Path+'_'+WRS_Row+'_'+i,
+
+  assetId:'projects/ee-hyinhe/assets/Esmaeel/Water/Irr_Extent/Irr_'+WRS_Path+'_'+WRS_Row+'_'+i,
+//  region: region, 
+      scale: 30,
+        maxPixels: 1e13,
+        crs: "EPSG:32637",
+  
+    });
+}
+
+
+
+
+function doAn (yearOfinterest) {
+ var year = yearOfinterest
+ var Prdays = 5
+var start_year = year;  //these are inclusive
+var end_year = year; // this is included too
+
+
+  
+  
+
+              
+var t = ee.FeatureCollection('projects/ee-hyinhe/assets/Esmaeel/OptramParameters')
+t.size()//.aside(print)
+t = t.filter(ee.Filter.eq('Parameter Check','ok'))
+t.size()//.aside(print)
+t = t.filter(ee.Filter.eq('wrs_path', WRS_Path)).filter(ee.Filter.eq('wrs_row', WRS_Row)).filter(ee.Filter.eq('year', year)).first()
+ee.Number(t.get('size')).aside(print,'size')
+// print(t)
+var size = t.get('size')
+var id = ee.Number(t.get('id'))
+var iw = ee.Number(t.get('iw'))
+var sd= ee.Number(t.get('sd'))
+var sw = ee.Number(t.get('sw')) 
+
+var params = ee.List([iw, id, sd, sw]);
+// print(params,'iw, id, sd, sw');
+  
+ //######################################################################################
+// 1. Get landdat collection for the specific path, raw and year
+var Collection = PrepareLandsat45789(start_year, end_year, WRS_Path, WRS_Row)
+var LandsatFootprintGeom = Collection.first().geometry()
+var LandsatFootprintMask = ee.Image(1).clip(LandsatFootprintGeom)
+// Map.centerObject(LandsatFootprintMask,10)
+                  ////////////   ** --- **   \\\\\\\\\\\\\\\\\\\\\\\
+                  
+                  
+// 2. Get NDVI and STR from the collection to make it optram ready
+var OPTRAM_ReadyCollection =  Collection.map(OPTRAM_Ready)
+
+                  ////////////   ** --- **   \\\\\\\\\\\\\\\\\\\\\\\ 
+  
+// 3. Add matched CHIRPS precipitation for each scene 
+//  precipitation collection
+ var precipitationColl = ee.ImageCollection('UCSB-CHG/CHIRPS/DAILY')
+                  .filter(ee.Filter.date(year-2+'-12-1', year+'-12-31'))
+                  .select(['precipitation'],['pr']) 
+                  
+                  
+var OPTRAM_ReadyCollection = OPTRAM_ReadyCollection.map(MatchedSM_leftPr)
+
+
+                 ////////////   ** --- **   \\\\\\\\\\\\\\\\\\\\\\\ 
+
+// 4. Define helper masks
+
+  // Crop Mask
+// we use ESA not for crop mask, but to exclude water, trees and urban
+var WC_ESA = ee.ImageCollection("ESA/WorldCover/v100").first(); 
+var NotMask = WC_ESA.neq(50).and(WC_ESA.neq(80)).and(WC_ESA.neq(10));
+// we use NDVI threshold: max during the season is more than 0.3
+var Collection = PrepareLandsat45789(start_year, end_year, WRS_Path, WRS_Row)
+var WinterndviMask =  Collection.map(OPTRAM_Ready).select('ndvi').filter(ee.Filter.date(year-1+'-9-1', year+'-4-30'))
+WinterndviMask =WinterndviMask.max().gt(0.3)
+var SummerndviMask =  Collection.map(OPTRAM_Ready).select('ndvi').filter(ee.Filter.date(year+'-5-1', year+'-9-1'))
+SummerndviMask =SummerndviMask.max().gt(0.3)
+// Use He Mask (Yin et al 2025)
+var heMask = ee.Image('projects/ee-hyinhe/assets/Jesse/Syria/workspace/Abandonment_all').gt(0).updateMask(NotMask).updateMask(LandsatFootprintMask)
+heMask = ee.Image(1).where(heMask,heMask)
+// Combine He mask, NDVI and not mask
+var cropMaskWinter = ee.Image(0).where(WinterndviMask.unmask().and(heMask.unmask()),1).updateMask(NotMask).updateMask(LandsatFootprintMask)
+var cropMaskSummer = ee.Image(0).where(SummerndviMask.unmask().and(heMask.unmask()),1).updateMask(NotMask).updateMask(LandsatFootprintMask)
+ 
+               ////////////   ** --- **   \\\\\\\\\\\\\\\\\\\\\\\ 
+//5. Calculate SM based on Optram
+
+
+var Optram_SM = OPTRAM_ReadyCollection.map(CalcOptramSM)
+// clip between 0 and 1
+Optram_SM = Optram_SM.map(function(img){ return img.updateMask(img.gte(0)).updateMask(img.lte(1))})
+
+
+                 ////////////   ** --- **   \\\\\\\\\\\\\\\\\\\\\\\ 
+// 6. Mask the rain and add Null filter
+var RainMasked = Optram_SM.map(function(img){
+  img =  img.select('Optram_SM').updateMask(img.select('pr').lte(0)).abs()
+  var t = ee.Number(img.reduceRegion({reducer: ee.Reducer.sum(), geometry: LandsatFootprintGeom, scale: 30,bestEffort: true}).get('Optram_SM'))
+
+  return img.set('IsNull', ee.Algorithms.If(t.gt(0),false,true)).copyProperties(img, img.propertyNames())
+})
+// filter fully masked images
+RainMasked = RainMasked.filter(ee.Filter.eq('IsNull',false))
+// check the pixel-wise length of the reamining observations
+var MaskLength = RainMasked.select('Optram_SM').count().rename('length')
+
+
+
+var RainMasked = RainMasked.select('Optram_SM')
+//############### seasons #################################################### 
+
+
+// Filter for the season of interest
+var Optram_SMWinter  = RainMasked.filter(ee.Filter.date(year-1+'-9-1', year+'-4-30'))
+var Optram_SMSummer  = RainMasked.filter(ee.Filter.date(year+'-5-1', year+'-9-1'))
+// Map.addLayer(Optram_SMWinter.select('Optram_SM'),false,'winter')
+// Map.addLayer(Optram_SMSummer.select('Optram_SM'),false,'summer')
+//############### Temporal Stability metrics  #################################################### 
+function SeasonWraper (CollectionSeason, MASK){
+// the realtive difference using spatial mean at time t
+var δxt = CollectionSeason.map(function(img){
+  var Qt = ee.Number(img.select('Optram_SM').reduceRegion({reducer: ee.Reducer.mean(), geometry: LandsatFootprintGeom, scale: 30, maxPixels: 1e13}).get('Optram_SM'))
+  var δxt = img.subtract(Qt).divide(Qt)
+  return δxt.copyProperties(img, img.propertyNames())
+})
+
+var δx = δxt.mean().rename('Optram_SM_δx')
+// var Segmaδx = δxt.stdDev()
+// tempporal mean 
+var Qx = CollectionSeason.mean()
+var Axt = CollectionSeason.map(function(img){
+  var Axt = img.subtract(Qx).divide(Qx)
+  return Axt.copyProperties(img, img.propertyNames())
+})
+var Ax = Axt.mean().rename('Optram_SM_Ax')
+// var SegmaAx = Axt.stdDev()
+
+
+//############### Fin irrigation with K mean instead of utsu  #################################################### 
+// get the mean (which is K-mean input)
+
+
+var MeanOptram_SM = CollectionSeason.select('Optram_SM').mean().rename('Optram_SM_Mean')
+var StdDevOptram_SM = CollectionSeason.select('Optram_SM').reduce(ee.Reducer.stdDev()).rename('Optram_SM_stdDev')
+
+
+var Optram = δx.addBands(StdDevOptram_SM).addBands(MeanOptram_SM)
+var OtsuMetrics =δx.updateMask(MASK).rename('Optram_SM')
+
+
+var irrigatedCluster = ee.Image(Otsu(OtsuMetrics)).select(['Outso_threshold'],['Cluster'])
+
+// Display the clusters with random colors.
+ var IrrigatedAreaCluster = irrigatedCluster//.eq(0) // just reverse the bands to match reference data
+ 
+
+//############### Forward differencing to get the increase #################################################### 
+
+
+var differenceCollection = ForwardDifferencing(CollectionSeason.select('Optram_SM'))
+// Map.addLayer(differenceCollection.select('difference'), {min:-5, max:10}, 'collection with difference',false)
+
+// check the artifical change according to our criteria 1- realtive SM greater than 20%, 2-increase greater than 5%, 3- number of observation ggreater than 3
+var artificalChange = differenceCollection
+.map(function(img){
+  return ee.Image(0).where(img.select('Optram_SM')//.gt(SMthreshold)
+  .updateMask(img.select('difference').gt(increasethreshold))//.updateMask(NotMask)
+  ,1)
+  .copyProperties(img, img.propertyNames()); 
+})
+
+var irrigationIndicator = artificalChange.sum().rename('Irr_occurance').updateMask(MaskLength.gte(lengththreshold))
+
+return Optram.addBands(irrigationIndicator).addBands(IrrigatedAreaCluster).addBands(MaskLength)
+}
+
+var Winter = SeasonWraper(Optram_SMWinter,cropMaskWinter)
+var Summer = SeasonWraper(Optram_SMSummer,cropMaskSummer)
+
+// Irrigated areas will be the combination of both detected events and clustered
+var finalWinter = ee.Image(0).where(Winter.select('Cluster').eq(1).and(Winter.select('Irr_occurance').gte(Irr_threshold)),1)
+var finalSummer = ee.Image(0).where(Summer.select('Cluster').eq(1).and(Summer.select('Irr_occurance').gte(Irr_threshold)),1)
+
+// Map.addLayer(Winter.select('Optram_SM_Mean'), {min: 0, max: 1, palette: soilMoisturePalette}, 'Mean Relative soil moisture Winter',false)
+// Map.addLayer(Winter.select('Cluster').updateMask(1), {min: 0, max: 1, palette: soilMoisturePalette}, 'Irrigated Cluster k-mean Winter')
+// Map.addLayer(Winter.select('Irr_occurance'), {min: 0, max: 3, palette: soilMoisturePalette}, 'Detected events irrigationIndicator Winter'+year)
+// Map.addLayer(Winter.select('Irr_occurance').gte(Irr_threshold), {min: 0, max: 1, palette: soilMoisturePalette}, 'Detected Winter')
+// Map.addLayer(finalWinter, {min: 0, max: 1, palette: soilMoisturePalette}, 'Mapped irrigated area finalWinter')
+// Map.addLayer(Summer.select('Optram_SM_Mean'), {min: 0, max: 1, palette: soilMoisturePalette}, 'Mean Relative soil moisture Summer',false)
+// Map.addLayer(Summer.select('Cluster').updateMask(1), {min: 0, max: 1, palette: soilMoisturePalette}, 'Irrigated Cluster k-mean Summer')
+// Map.addLayer(Summer.select('Irr_occurance'), {min: 0, max: 3, palette: soilMoisturePalette}, 'Detected events irrigationIndicator Summer'+year)
+// Map.addLayer(Summer.select('Irr_occurance').gte(Irr_threshold), {min: 0, max: 1, palette: soilMoisturePalette}, 'Detected Summer')
+// Map.addLayer(finalSummer, {min: 0, max: 1, palette: soilMoisturePalette}, 'Mapped irrigated area finalSummer')
+
+// var onlyWinter = finalWinter.updateMask(finalSummer.eq(0))
+// Map.addLayer(onlyWinter, {min: 0, max: 1, palette: soilMoisturePalette}, 'Mapped irrigated area in Winter')
+
+
+// summer 0 and winter 0 >> final 0
+// summer 1 and winter 1 >> final 1
+// summer 1 and winter 0 >> final 2
+// summer 0 and winter 1 >> final 3
+var classFinal = ee.Image(0)
+.where(finalSummer.eq(0).and(finalWinter.eq(0)),0)
+.where(finalSummer.eq(1).and(finalWinter.eq(1)),1)
+.where(finalSummer.eq(1).and(finalWinter.eq(0)),2)
+.where(finalSummer.eq(0).and(finalWinter.eq(1)),3).rename('class').updateMask(LandsatFootprintMask)
+.toInt8().set({
+'year' : year,
+'WRS_Path':WRS_Path,
+'WRS_Row':WRS_Row
+})
+// print(classFinal)
+var Final = classFinal.toInt8()
+.addBands(Winter.select(['Optram_SM_stdDev'],['SM_stdDev_winter'])).multiply(100).toInt8()
+.addBands(Summer.select(['Optram_SM_stdDev'],['SM_stdDev_summer'])).multiply(100).toInt8()
+.addBands(Winter.select(['Optram_SM_Mean'],['SM_mean_winter'])).multiply(100).toInt8()
+.addBands(Summer.select(['Optram_SM_Mean'],['SM_mean_summer'])).multiply(100).toInt8()
+// .addBands(Winter.select(['length'],['length_winter']))
+// .addBands(Summer.select(['length'],['length_summer']))
+// .addBands(Winter.select(['Irr_occurance'],['Irr_occurance_winter']))
+// .addBands(Summer.select(['Irr_occurance'],['Irr_occurance_summer']))
+.updateMask(LandsatFootprintMask)
+ //.copyProperties(RainMasked.first(), RainMasked.first().propertyNames())
+.set({
+'year' : year,
+'WRS_Path':WRS_Path,
+'WRS_Row':WRS_Row
+})
+// print(Final)
+// Map.addLayer(classFinal, {min: 0, max: 4, palette: soilMoisturePalette}, 'Mapped irrigated area ')
+
+// // Map.addLayer(Final,false,'Final')
+ 
+//   Export.image.toAsset({
+//       image: classFinal,
+//       description: 'Irr_'+WRS_Path+'_'+WRS_Row+'_'+year,
+
+
+//         assetId:'projects/ee-hyinhe/assets/Esmaeel/Water/Irr_SM/Irr_'+WRS_Path+'_'+WRS_Row+'_'+year,
+// //  region: region, 
+//       scale: 30,
+//         maxPixels: 1e13,
+//         crs: "EPSG:32637",
+  
+//     });
+
+//######################################################################################
+//###############   \\        //    ####################################################
+//###############     FUNCTIONS     ####################################################
+//###############   //         \\   ####################################################
+//######################################################################################
+//###############   Match with Pr ####################################################  
+
+
+
+function MatchedSM_leftPr (im){
+var dateL = ee.Date(im.get('system:time_start'))
+
+ var matchesPr = precipitationColl
+    .filter(ee.Filter.lte('system:time_start', dateL.millis()))
+    .filter(ee.Filter.gt('system:time_start', dateL.millis().subtract(Prdays * 24 * 60 * 60 * 1000))) // consider only last n days
+    .sort('system:time_start',false).sum().updateMask(LandsatFootprintMask);  
+     
+return  ee.Image.cat(im,matchesPr)      
+                .copyProperties(im, im.propertyNames())
+
+}
+
+
+//====================================== Validation of irrigation extent ============================================
+
+
+// get all landsat in one collection
+function PrepareLandsat45789 (StartYear, EndYear, WRS_Path, WRS_Row){
+    // filter
+    function filterCollection (collection){
+      return collection.filter(ee.Filter.calendarRange(StartYear-1, EndYear,'year'))
+        .filter(ee.Filter.eq('WRS_PATH', WRS_Path))
+        .filter(ee.Filter.eq('WRS_ROW', WRS_Row))
+   
+         .filter(ee.Filter.lt('CLOUD_COVER',75))
+    }
+
+    var landsat_4 = filterCollection(ee.ImageCollection('LANDSAT/LT04/C02/T1_L2'))
+         .select(['SR_B1','SR_B2','SR_B3','SR_B4','SR_B5','SR_B7','QA_PIXEL','QA_RADSAT']) 
+        // .map(ETM_to_OLI)
+         .map(function(im){ return im.set({'Landsat': 'L4'})});
+    var landsat_5 = filterCollection(ee.ImageCollection('LANDSAT/LT05/C02/T1_L2')) 
+         .select(['SR_B1','SR_B2','SR_B3','SR_B4','SR_B5','SR_B7','QA_PIXEL','QA_RADSAT']) 
+       //  .map(ETM_to_OLI)
+         .map(function(im){ return im.set({'Landsat': 'L5'})});
+    var landsat_7 = filterCollection(ee.ImageCollection('LANDSAT/LE07/C02/T1_L2')) 
+         .filter(ee.Filter.calendarRange(1999, 2017,'year')) // exclude faulty scenes after 2021
+         .select(['SR_B1','SR_B2','SR_B3','SR_B4','SR_B5','SR_B7','QA_PIXEL','QA_RADSAT']) 
+       //  .map(ETM_to_OLI)
+         .map(function(im){ return im.set({'Landsat': 'L7'})});
+    var landsat_8 = filterCollection(ee.ImageCollection('LANDSAT/LC08/C02/T1_L2')) 
+         .select(['SR_B2','SR_B3','SR_B4','SR_B5','SR_B6','SR_B7','QA_PIXEL','QA_RADSAT'],['SR_B1','SR_B2','SR_B3','SR_B4','SR_B5','SR_B7','QA_PIXEL','QA_RADSAT']) 
+         .map(function(im){ return im.set({'Landsat': 'L8'})});
+    var landsat_9 = filterCollection(ee.ImageCollection('LANDSAT/LC09/C02/T1_L2')) 
+         .select(['SR_B2','SR_B3','SR_B4','SR_B5','SR_B6','SR_B7','QA_PIXEL','QA_RADSAT'],['SR_B1','SR_B2','SR_B3','SR_B4','SR_B5','SR_B7','QA_PIXEL','QA_RADSAT']) 
+         .map(function(im){ return im.set({'Landsat': 'L9'})});
+    var merged = ee.ImageCollection(landsat_9.merge(landsat_8).merge(landsat_7).merge(landsat_4).merge(landsat_5))
+                  .map(QualityMask)
+                  .select(['SR_B1','SR_B2','SR_B3','SR_B4','SR_B5','SR_B7'],['blue','green','red','nir','swir1','swir2'])
+                  
+    return merged ;
+}
+
+// function to mask cloudy, shadowy and low quality pixels + scale bands
+function QualityMask (img){
+    var qa = img.select('QA_PIXEL');
+    var saturation = img.select("QA_RADSAT").eq(0);
+    var bitwiseMask = ee.Image(0)
+                            .or(qa.bitwiseAnd(1 << 0)) // filled value
+                            .or(qa.bitwiseAnd(1 << 1)) // dialated cloud
+                            .or(qa.bitwiseAnd(1 << 2)) // cirrus
+                            .or(qa.bitwiseAnd(1 << 3)) // cloud
+                            .or(qa.bitwiseAnd(1 << 4)) // shadow
+                            .or(qa.bitwiseAnd(1 << 5)) // snow
+                            .or(qa.bitwiseAnd(1 << 9).and(qa.bitwiseAnd(1 << 10))) //combination of Bits 8-11
+                            .or(qa.bitwiseAnd(1 << 8).and(qa.bitwiseAnd(1 << 11)))
+                            .or(qa.bitwiseAnd(1 << 9).and(qa.bitwiseAnd(1 << 11)))
+                            .not()
+    var scaeledBands = img.select("SR_B.").multiply(0.0000275).add(-0.2);
+    return scaeledBands.updateMask(bitwiseMask.and(saturation)).set({
+        "system:time_start": img.get("system:time_start"),
+        "system:index": img.get("system:index"),
+      "Landsat": img.get("Landsat")
+    })
+}
+
+
+// function for L7 ETM  L8 OLI harmonization using coefficents from Roy, D.P. et al 2018
+function ETM_to_OLI (img){
+    var ETM = img.select("SR_B.");
+    // regression line for reflectance OLI  = A * ETM (resampled) + B (scaled 10000)
+    var A = ee.Image.constant([0.9785, 0.9542, 0.9825, 1.0073, 1.0171, 0.9949]);
+    var B = ee.Image.constant([-0.0095, -0.0016, -0.0022, -0.0021, -0.0030, 0.0029]);
+    var OLI = (ETM.resample('bicubic').multiply(A)).add(B.multiply(10000)).set({
+        "system:time_start": ETM.get("system:time_start"),
+        "system:index": ETM.get("system:index")})
+    return OLI.addBands(img.select(['QA_PIXEL','QA_RADSAT']));
+}
+
+
+// Map.centerObject(LandsatFootprintMask,8)
+
+//###############    Calculate OPTRAM    ####################################################  
+
+
+
+function CalcOptramSM (img){
+ img = img.updateMask(img.select('STR')).updateMask(NotMask); // water urban and tree only
+var iw = ee.Number(params.get(0))
+var id = ee.Number(params.get(1))
+var sd = ee.Number(params.get(2))
+var sw = ee.Number(params.get(3))
+// calculate sm OPTRAM
+var Optram_SM = img
+.expression('(id + sd * ndvi - STR)/(id - iw + (sd - sw) * ndvi)',{
+    'id': id, 'sd': sd, 'ndvi': img.select('ndvi'), 'STR': img.select('STR'), 'iw': iw, 'sw': sw
+    }).rename('Optram_SM')
+    
+img = img.select(['ndvi','STR','pr'])
+  return ee.Image.cat(img,Optram_SM)
+                            .copyProperties(img, img.propertyNames());
+                            //.set({'Calibration':ok, 'degredationFlag': ok3, })
+}
+  
+
+
+//###############   prepare OPTRAM ready Collection  ####################################################
+
+// function to add ndvi, and STR (for OPTRAM parameters)
+function OPTRAM_Ready (img) {
+    var ndvi = img.normalizedDifference(["nir", "red"]).rename("ndvi").float();
+    var Rswir = img.select('swir1').rename('Rswir');
+    var STR = img.expression('((Rswir -1) * (Rswir -1))/ (2 * Rswir)',
+                            {'Rswir': Rswir}).rename('STR');
+      return ee.Image.cat(ndvi,STR)
+                            .copyProperties(img, img.propertyNames())
+}
+
+//############### Forward differencing to get the increase #################################################### 
+function ForwardDifferencing (collection) {
+var withDoys = collection.map(function(image){
+  
+  var date = image.date();
+  var doy = date.getRelative('day', 'year');
+  var time = image.metadata('system:time_start');
+  var doyImage = ee.Image(doy)
+      .rename('doy')
+      .int();
+  return image.addBands(doyImage).addBands(time)
+     .copyProperties(image, image.propertyNames()); 
+})
+    
+var array = withDoys.toArray();
+var timeAxis = 0;
+var bandAxis = 1;
+
+var subtract = function(array) {
+  var time = array.arraySlice(bandAxis, -1);
+  var sorted = array.arraySort(time);
+  var doy = sorted.arraySlice(bandAxis, -2, -1);
+    var image = sorted.arraySlice(bandAxis, 0,1);
+  var left = image.arraySlice(timeAxis, 1);
+  var right = image.arraySlice(timeAxis, 0, -1);
+var dif = left.subtract(right)
+  return dif;
+};
+
+var DOYdifference = subtract(array);
+
+var differenceCollection = withDoys.map(function (image) {
+  var arrayTime = array.arraySlice(bandAxis, -1)
+  arrayTime = arrayTime.arraySort(arrayTime)
+  var timeMask = arrayTime
+    .arraySlice(timeAxis, 1) // Drop first time - will not have a difference
+    .eq(image.getNumber('system:time_start'))
+    .arrayProject([timeAxis])
+  var maskedDifference = DOYdifference
+    .arrayProject([timeAxis])
+    .arrayMask(timeMask)
+  var difference = maskedDifference
+    .updateMask(maskedDifference.arrayLength(timeAxis))
+    .arrayFlatten([['difference']])
+  return image.addBands(difference)
+})
+return differenceCollection
+}
+
+//############### Automatic thresholding with Outsu   #################################################### 
+/// Outsu
+function Otsu (img){
+  var Optram_SM = img.select('Optram_SM')
+
+  var histogram = Optram_SM.select('Optram_SM')
+  // .updateMask(Optram_SM.select('Optram_SM').lte(1)).updateMask(Optram_SM.select('Optram_SM').gte(-1)).unitScale(-1, 1)
+  .reduceRegion({
+  reducer: ee.Reducer.histogram(255, 0.0001)
+      .combine('mean', null, true)
+      .combine('variance', null, true)
+      , 
+  geometry: LandsatFootprintGeom, 
+  scale: 30,
+  bestEffort: true
+}).get('Optram_SM_histogram')
+
+ var counts = ee.Array(ee.Dictionary(histogram).get('histogram'));
+  var means = ee.Array(ee.Dictionary(histogram).get('bucketMeans'));
+  var size = means.length().get([0]);
+  var total = counts.reduce(ee.Reducer.sum(), [0]).get([0]);
+  var sum = means.multiply(counts).reduce(ee.Reducer.sum(), [0]).get([0]);
+  var mean = sum.divide(total);
+  
+  var indices = ee.List.sequence(1, size);
+
+  // Compute between sum of squares, where each mean partitions the data.
+  var bss = indices.map(function(i) {
+    var aCounts = counts.slice(0, 0, i);
+    var aCount = aCounts.reduce(ee.Reducer.sum(), [0]).get([0]);
+    var aMeans = means.slice(0, 0, i);
+    var aMean = aMeans.multiply(aCounts)
+        .reduce(ee.Reducer.sum(), [0]).get([0])
+        .divide(aCount);
+    var bCount = total.subtract(aCount);
+    var bMean = sum.subtract(aCount.multiply(aMean)).divide(bCount);
+    return aCount.multiply(aMean.subtract(mean).pow(2)).add(
+           bCount.multiply(bMean.subtract(mean).pow(2)));
+  });
+  
+  
+    // threshold is  the mean value corresponding to the maximum BSS
+var outsoThreshold =  ee.Number(means.sort(bss).get([-1]));
+var OutsoMask = Optram_SM.select('Optram_SM').gte(outsoThreshold).rename('Outso_threshold')
+
+// img = img.updateMask(Optram_SM)
+  return ee.Image.cat(img,OutsoMask)
+                            .copyProperties(img, img.propertyNames()).set({
+                            'Outso_threshold': outsoThreshold})
+}
+return classFinal 
+}
