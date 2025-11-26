@@ -1,0 +1,63 @@
+
+//######################################################################################
+//#### Kent State University - SenslandLab - 2025 ####
+//### Esmaeel Adrah eadrah@kent.edu ###
+// this is a quality control step; 
+// This is a documentation of the response design
+//######################################################################################
+
+// Labeling Reference data 
+// Set location and time 
+// 1-	Double-click on the polygon to check the ID and navigate automatically to its location
+ 
+// 2-	Confirm if the polygon is on agricultural land. If it’s agricultural land, move to step 3; otherwise, assign it a value from below and move on
+// >>> 0 If it’s not agricultural land
+// >>> 5 If only 30% or less of the polygon area overlaps agricultural land (e.g, the above screenshot)
+// >>> 6 if it’s tree (forest or tree crops)
+// 3-	Click the history bar and make sure it’s on the year of interest (start with the most recent year); pay attention to which month you are looking at. 
+// 4-	Check the polygon location in the agricultural field, check the surrounding fields, the existence of irrigation infrastructure, and the location's proximity to it.
+// Make an educated guess
+// 5-	Make an educated guess based on
+// a.	The above location information (proximity to irrigation infra, texture contrast among neighboring fields)
+// b.	Water reservoir (Example in Figure 1)
+// c.	The greenness in the year and month appears in the VHR satellite images (sometimes more than one image available per year, check all photos from different months)
+// d.	The level of management (tillage/plowing), planting patterns, and texture you can observe in the VHR
+// What to look for?
+// High greenness in summer >> likely irrigated
+// High greenness in winter, but not in summer >> likely rainfed, check other clues 
+// Confirm your guess and assign a value 
+// 6-	Check the corresponding ID in the Excel sheet and locate the polygon/year. Check the NDVI value provided in the Excel sheet to confirm your decision. (this is the NDVI for June-July that year)
+// Once you make a decision, overwrite the NDVI value using one of the following:
+// 0 >>> non-agricultural land
+// 1 >>> Rainfed
+// 2 >>> Irrigated, but not sure
+// 3 >>> Irrigated
+// 4 >>> I can’t tell
+// 5 >>> overlapping
+// 6 >>> trees
+// Check other years
+// 7-	Move the history bar in Google Earth to the previous available year and repeat step 4
+ 
+// 8-	Skip the years where VHR is unavailable; once all years with VHR images are completed, move to the next polygon
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// Clues (water reservoir): 
+ 
+// Figure 1.a Empty Water reservoir
+ 
+// Figure 1.b filled in Water reservoir: 36 01 27 N | 40 34 11 E | Feburary 2021
+
