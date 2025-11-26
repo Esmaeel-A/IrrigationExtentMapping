@@ -1,0 +1,155 @@
+//######################################################################################
+//#### Kent State University - SenslandLab - 2025 ####
+//### Esmaeel Adrah eadrah@kent.edu ###
+// this is a quality control step; 
+// This code generate random points to use for accuracy assessment
+//######################################################################################
+
+
+// generate samples
+// region 
+var boundary = ee.FeatureCollection('projects/ee-hyinhe/assets/Esmaeel/LessIsMore_GEDI_TreeCrops/Inputs/Syria_Boundaries')
+var Turkey = boundary.filter(ee.Filter.eq('ADM0_NAME','Turkey'))
+var other = boundary.filter(ee.Filter.eq('ADM0_NAME','Turkey').not())
+
+var irrExtent = ee.ImageCollection('projects/ee-hyinhe/assets/Esmaeel/Water/Irr_Extent')
+var eventsS = irrExtent.map(function(img){return img.remap([0,1,2,3],[0,1,1,0])})
+var eventsB = irrExtent.map(function(img){return img.remap([0,1,2,3],[0,1,0,0])})
+
+var img = ee.Image('projects/ee-hyinhe/assets/Jesse/Syria/workspace/Abandonment_all')
+var mask= img.gt(0)
+
+mask = ee.Image(1).where(mask.eq(0),0) 
+// Map.addLayer(mask,null,'mask')
+
+var im23 = eventsS.filter(ee.Filter.eq('year',2023)).mode().clip(boundary).updateMask(mask)
+.setDefaultProjection({crs: 'EPSG:32637', scale:30})
+Map.addLayer(im23,{
+    min: 0,
+    max: 1},'img23')
+var samples = im23.stratifiedSample(
+  {numPoints:200, scale:30, seed:19, dropNulls: true,region: table, geometries: true})
+  
+  
+// Add unique id to each set of points
+var idList = ee.List.sequence(0,399);  // size is 400
+var list = samples.toList(400);
+// set 
+var samples = ee.FeatureCollection(idList.map(function(ID){
+  var feat = ee.Feature(list.get(ID));
+  return feat.set('ID', ee.Number(ID));
+}));
+
+
+
+// Export.table.toAsset({
+//   collection: samples
+// });
+// samples.filterBounds(Turkey).aggregate_histogram('remapped').aside(print)
+// samples.filterBounds(other).aggregate_histogram('remapped').aside(print)
+// // export samples locaiton as kmz
+var samples = samples.randomColumn()
+var set3 = samples.filterBounds(Turkey).aside(print)
+var rest = samples.filterBounds(other).randomColumn()
+var set1 = rest.filter(ee.Filter.lte('random', 0.6)).aside(print)
+var set2 = rest.filter(ee.Filter.gte('random', 0.328)).aside(print)
+Export.table.toDrive({
+  collection: set3.map(function(f){return f.buffer(15).bounds()}),
+  fileFormat: 'kmz',
+  description: 'Samples_EM_set3',
+});
+
+Export.table.toDrive({
+  collection: set1.map(function(f){return f.buffer(15).bounds()}).select(['ID','remapped']),
+  fileFormat: 'kmz',
+  description: 'Samples_EM_set1',
+});
+Export.table.toDrive({
+  collection: set2.map(function(f){return f.buffer(15).bounds()}).select(['ID','remapped']),
+  fileFormat: 'kmz',
+  description: 'Samples_EM_set2',
+});
+
+
+var years = [2000,2001,2002,2003,2004,2005,2006,2007,2008,2009,2010,2011,
+2012,2013,2014,2015,2016,2017,2018,2019,2020,2021,2022,2023]
+
+
+
+// var samples = ee.FeatureCollection('projects/water-middleeast/assets/Reference_samples')
+
+
+var Collection = rrr.filter(ee.Filter.calendarRange(6, 7, 'month'))
+
+var ImageList = ee.ImageCollection(years.map(function(year){
+  return Collection.filter(ee.Filter.calendarRange(year, year,'year')).max().divide(10000) //ee.Reducer.percentile(95)
+  .set({
+        "system:time_start": year
+    })
+  
+}))
+Map.addLayer(ImageList,null,null,false)
+// print(ImageList.limit(10))
+var testImage = ImageList.first()
+
+
+
+
+var extractValues = function(year, FC) {
+var testImage = Collection.filter(ee.Filter.calendarRange(year, year,'year')).reduce(ee.Reducer.percentile([95])).divide(10000).add(0.01).rename('ndvi')
+var FC2 = ee.FeatureCollection(FC).map(function(testPoint){
+var tt = testImage.reduceRegion(ee.Reducer.first(), testPoint.geometry(), 30)
+// print(tt)
+return testPoint.set(year, ee.Number(tt.get('ndvi')))
+
+})
+return FC2 }
+
+var result = ee.FeatureCollection(ee.List(years).iterate(extractValues, samples))
+print(result)
+Map.addLayer(result)
+
+
+
+var resultset3 = result.filterBounds(Turkey).aside(print)
+var resultrest = result.filterBounds(other).randomColumn()
+var resultset1 = resultrest.filter(ee.Filter.lte('random', 0.6)).aside(print)
+var resultset2 = resultrest.filter(ee.Filter.gte('random', 0.328)).aside(print)
+
+
+
+Export.table.toDrive({
+  collection: resultset1.map(function(f){return f.buffer(15).bounds()}).select(['ID','remapped']).aside(print),
+  fileFormat: 'kmz',
+  description: 'Samples_EM_set1_updated',
+});
+Export.table.toDrive({
+  collection: resultset2.map(function(f){return f.buffer(15).bounds()}).select(['ID','remapped']).aside(print),
+  fileFormat: 'kmz',
+  description: 'Samples_EM_set2_updated',
+});
+
+
+
+Export.table.toDrive({
+  collection: resultset3,//.select(['system:index', 'foo'], ['id', 'foo']),
+  fileFormat: 'csv',
+  description: 'Reference_set3',
+});
+
+Export.table.toDrive({
+  collection: resultset2,//.select(['system:index', 'foo'], ['id', 'foo']),
+  fileFormat: 'csv',
+  description: 'Reference_set2',
+});
+
+Export.table.toDrive({
+  collection: resultset1,//.select(['system:index', 'foo'], ['id', 'foo']),
+  fileFormat: 'csv',
+  description: 'Reference_set1',
+});
+
+
+
+
+// generate different samples for each
