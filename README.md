@@ -19,6 +19,10 @@ Design sampling and perform accuracy assessments
 
 All scripts are written for use in Google Earth Engine (GEE).
 
+# Add in Google Earth Engine
+To add the repository in Google Earth Engine directly you can click on the following link
+https://code.earthengine.google.com/?accept_repo=users/Esmaeel-ad/IrrigationExtentMapping
+
 # Repository Structure
 ## 01_CalculateSM_OptramParameters
 
