@@ -1,0 +1,407 @@
+
+//######################################################################################
+//#### Kent State University - SenslandLab - 2025 ####
+//### Esmaeel Adrah eadrah@kent.edu ###
+// this is a quality control step; to go directly to map irrigation extent go to step 04 
+// This code Compare OPTRAM SM calculated in Step 02 to SMAP Soil moisture
+// for each Optram SM image (derived form landsata image) it's matched with SMAP same date and aggregated to SMAP pixel size
+// Correlation R2, RMSE, P value,slope and intercepts are calculated for each image for all years 2000-2024
+// Individual scatter plot for any image can be plotted by setting up the parameters manually
+//######################################################################################
+
+
+
+var soilMoisturePalette = [ 
+  'brown', 'orange', 'yellow', 'green', 'blue'
+];
+
+var filterlowCorrelation = true
+
+var WRS_Path = 172;
+var WRS_Row = 35;
+var year = 2018
+var start_year = 2015;  //these are inclusive
+var end_year = 2024; // this is included too
+
+var index = 241
+var geometry = geometry3
+var sliceP = 358 
+
+var Optram_SM = ee.ImageCollection('projects/ee-hyinhe/assets/Esmaeel/Water/SM_Collections')
+        .filter(ee.Filter.calendarRange(start_year-1, end_year,'year'))
+        .filterBounds(geometry).select(['SM'],['Optram_SM'])
+        .filter(ee.Filter.neq('Landsat','L7'))
+        // .filter(ee.Filter.eq('WRS_PATH', WRS_Path))
+        // .filter(ee.Filter.eq('WRS_ROW', WRS_Row))
+Map.addLayer(Optram_SM,false,false,false)
+
+
+var LandsatFootprintGeom = Optram_SM.first().geometry()
+var LandsatFootprintMask = ee.Image(1).clip(LandsatFootprintGeom)
+Map.addLayer(Optram_SM.first(),false,false,false)
+print(Optram_SM.first())
+var smapCollection = ee.ImageCollection("NASA/SMAP/SPL3SMP_E/006")
+           .merge(ee.ImageCollection("NASA/SMAP/SPL3SMP_E/005"))
+          .filter(ee.Filter.date(start_year-2+'-12-1', end_year+'-12-31')) // filter same data of interest and allow 7 days before
+              .select(['soil_moisture_am'],['Smap_SM']) // surface soil‑moisture band
+              .filterBounds(LandsatFootprintGeom)
+var proj = smapCollection.first().projection()
+var smapScale = proj.nominalScale()
+      
+              
+                  ////////////   ** --- **   \\\\\\\\\\\\\\\\\\\\\\\
+                  
+// 1. Add Matched SMAP for comparison
+var Optram_SM = Optram_SM.map(MatchedSM_leftSM)
+// // we can filter image that didn't find any SM match (relevant only for correlation)
+// OPTRAM_ReadyCollection = OPTRAM_ReadyCollection.filter(ee.Filter.eq('SmMatch', true))
+
+                  ////////////   ** --- **   \\\\\\\\\\\\\\\\\\\\\\\
+                  
+// 2. Add correlation for each matched image and plot the correlation time series
+var Optram_SM = Optram_SM.sort('system:time_start',false).map(pearsonsCorrelation)
+  
+
+
+
+
+                  ////////////   ** --- **   \\\\\\\\\\\\\\\\\\\\\\\
+                  
+// 3. Check correlation for a test image and plot it
+// get a test image based on index
+var imageList = Optram_SM.sort('system:time_start',false).toList(Optram_SM.size());
+print(imageList)
+var test = ee.Image(imageList.get(index));
+// Map.addLayer(test.select('Optram_SM'), {min: 0, max: 1, palette: soilMoisturePalette}, 'OPTRAM  test',false)
+// print(test)
+
+Export.image.toDrive({
+  image: test.select('Optram_SM'),
+  description: 'test1', 
+  // dimensions: , 
+  // region: geometry, 
+  scale:30, 
+  maxPixels: 1e13
+  })
+
+                  ////////////   ** --- **   \\\\\\\\\\\\\\\\\\\\\\\
+////Match with rain
+var Prdays = 5 
+
+
+var precipitationColl = ee.ImageCollection('UCSB-CHG/CHIRPS/DAILY')
+                  .filter(ee.Filter.date(start_year-2+'-12-1', end_year+'-12-31'))
+                  .select(['precipitation'],['pr'])
+                  
+                  
+
+var Optram_SM = Optram_SM.map(MatchedSM_leftPr)
+
+
+// rain mask
+function MatchedSM_leftPr (im){
+var dateL = ee.Date(im.get('system:time_start'))
+
+ var matchesPr = precipitationColl
+    .filter(ee.Filter.lte('system:time_start', dateL.millis()))
+    .filter(ee.Filter.gt('system:time_start', dateL.millis().subtract(Prdays * 24 * 60 * 60 * 1000))) // consider only last n days
+    .sort('system:time_start',false).sum().updateMask(LandsatFootprintMask);  
+     
+return  ee.Image.cat(im,matchesPr)//.updateMask(matchesPr.eq(0))
+                .copyProperties(im, im.propertyNames())
+
+}
+
+if (filterlowCorrelation === true) {
+var Optram_SM = Optram_SM
+  .filter(ee.Filter.lte('correlation', 1)) // get rid of NaN
+  .filter(ee.Filter.lte('p-value', 0.1))
+    .filter(ee.Filter.gte('correlation', 0))
+  } else {
+  }
+
+
+
+// 3. Check correlation for all images and plot it
+
+
+
+var Optram_SM = Optram_SM.sort('system:time_start',false).map(pearsonsCorrelation)
+  
+
+
+//###############   Find SMAPthat match landsat  and add it ####################################################  
+
+
+function MatchedSM_leftSM (im){
+    var dateL = ee.Date(im.get('system:time_start'))
+    var matchesSM = smapCollection
+    .filter(ee.Filter.lte('system:time_start', dateL.millis()))
+    .filter(ee.Filter.gt('system:time_start', dateL.millis().subtract(5 * 24 * 60 * 60 * 1000))) // consider only last 7 days
+ .map(function(img) {
+                        var date = dateL.difference(ee.Image(img).date(), 'day')
+                        date = ee.Image(ee.Number(date)).rename('date').toLong().updateMask(img);
+                        return ee.Image.cat(img,date)
+                              .updateMask(LandsatFootprintMask)// because masked images from SMAP still included in the matching later!!
+                            .copyProperties(img, img.propertyNames())
+                      }).sort('system:time_start',false)
+                      
+// get the nearest pixel
+var first = matchesSM.reduce(ee.Reducer.firstNonNull())
+
+     
+ // a trick to disregard empty image if no match is found
+return  ee.Algorithms.If(ee.Number(first.bandNames().size()).gte(1),
+          ee.Image.cat(im,first.select(['Smap_SM_first','date_first'],['Smap_SM','Smap_date']))      
+                .set('SmMatch', true).copyProperties(im, im.propertyNames())
+                ,// Else if no image is found, then create an empty image
+          ee.Image.cat(im, ee.Image(999).rename("Smap_SM")
+                  .addBands(ee.Image(999).rename("Smap_date"))
+                  .updateMask(LandsatFootprintMask)
+                   )      
+                .set('SmMatch', false).copyProperties(im, im.propertyNames())
+      )
+}
+
+//############### Sptial  correlation      ####################################################  
+
+// var years = ee.List.sequence(start_year, end_year);
+// var months = ee.List.sequence(1, 12);
+// // Function to calculate monthly average
+// var MonthlyCol = function(collection){
+// var calculateMonthlyAverage = function(year) {
+//   return months.map(function(month) {
+//     var monthlyCollection = collection
+//         .filter(ee.Filter.calendarRange(year, year, 'year'))
+//         .filter(ee.Filter.calendarRange(month, month, 'month'));
+// //   var yearM = year-2
+// // var CDL = ee.ImageCollection('USDA/NASS/CDL')
+// //                   .filter(ee.Filter.date(yearM+'-01-01', yearM+'-12-31'))
+// //                   .first();
+// // var Mask = CDL.select('cultivated').eq(2).rename('All') 
+//     var monthlyMean = monthlyCollection.mean().toFloat()//.updateMask(Mask)
+//         .set('year', year)
+//         .set('month', month)
+//         .set('system:time_start', ee.Date.fromYMD(year, month, 1));
+        
+//     return monthlyMean;
+//   });
+// };
+// var monthlyAverages = ee.ImageCollection(years.map(calculateMonthlyAverage).flatten());
+// return monthlyAverages
+// }
+
+// Optram_SM = MonthlyCol(Optram_SM)
+
+//############### Sptial  correlation      ####################################################  
+
+
+
+// Add correlation as a property and filter based on it
+
+  function pearsonsCorrelation(img) {
+  var imgr = img.select(['Optram_SM', 'Smap_SM'])
+    
+var optram = img.select('Optram_SM').unitScale(0,100)
+var smap = img.select('Smap_SM').unitScale(0,1).updateMask(optram)//.subtract(maxValueSmap.divide(10)))
+var CorAll= ee.Image.cat(smap,optram)//.copyProperties(img, img.propertyNames())
+    img = CorAll
+    
+    
+    
+    
+    
+  var reduced = img.reduceRegion({
+    reducer: ee.Reducer.pearsonsCorrelation(), 
+    geometry: LandsatFootprintGeom, 
+    scale: 8905.559263461886, //SMAP scale;, 
+    tileScale: 16
+  })
+  
+  
+  
+  // calc RMSE
+var difference = img.select('Smap_SM').subtract(img.select('Optram_SM'));
+var sqdif = difference.multiply(difference);
+
+var meanS = sqdif.reduceRegion({
+  reducer: ee.Reducer.mean(),
+  geometry: LandsatFootprintGeom,
+  scale:  8905.559263461886, //SMAP scale;, 
+  maxPixels: 1e8
+});
+
+var RMSE = ee.Number(meanS.get('Smap_SM'))
+
+
+RMSE = ee.Algorithms.If(ee.Algorithms.IsEqual(RMSE, null),ee.Number(999), RMSE)
+RMSE = ee.Number(RMSE).sqrt()
+
+  
+  return img.copyProperties(imgr, imgr.propertyNames())
+  .set({'RMSE':ee.Number(RMSE)})
+  .set(reduced)//{'pearsonsCorrelation': reduced.get('correlation'),'p-value': reduced.get('p-value')})
+}
+
+
+
+  
+//############### Plot correlation for all images      ####################################################  
+
+var start_month = 1
+var end_month = 12
+
+
+ var months = ee.List.sequence(1, 12);
+ var years = ee.List.sequence(start_year, end_year);
+ 
+
+print(ui.Chart.feature.byFeature({
+  features: Optram_SM.sort('system:time_start',false)
+  .map(pearsonsCorrelationPlot)
+  .filter(ee.Filter.lte('correlation', 1)).filter(ee.Filter.lte('RMSE', 1)), 
+  xProperty: 'system:time_start', 
+  yProperties: 'correlation'
+}))
+
+
+function pearsonsCorrelationPlot(img) {
+  return ee.Feature(null, {'correlation': img.get('correlation'),'p-value': img.get('p-value')}).copyProperties(img, img.propertyNames())
+}
+
+  
+//############### Plot RMSE for all images      ####################################################  
+
+
+print(ui.Chart.feature.byFeature({
+  features: Optram_SM.sort('system:time_start',false)
+  .map(pearsonsCorrelationPlot) 
+  .filter(ee.Filter.lte('correlation', 1)).filter(ee.Filter.lte('RMSE', 1)), 
+  xProperty: 'system:time_start', 
+  yProperties: 'RMSE'
+}))
+
+
+function pearsonsCorrelationPlot(img) {
+  return ee.Feature(null, {'RMSE': img.get('RMSE')}).copyProperties(img, img.propertyNames())
+}
+
+
+
+
+//############### Plot correlation for one image      ####################################################  
+
+
+// mask Optram avove 1 and bleow 0
+//var optram = test.updateMask(test.select('Optram_SM').lte(1)).updateMask(test.select('Optram_SM').gte(0))
+var MaxMin = test.select(['Smap_SM','Optram_SM'])
+        .reduceRegion({reducer: ee.Reducer.minMax(), geometry: LandsatFootprintGeom, scale: smapScale//,bestEffort: true
+            })
+var maxValueSmap = ee.Number(MaxMin.get('Smap_SM_max'))
+var minValueSmap = ee.Number(MaxMin.get('Smap_SM_min'))
+var maxValueOptram = ee.Number(MaxMin.get('Optram_SM_max'))
+var minValueOptram = ee.Number(MaxMin.get('Optram_SM_min'))
+
+var optram = test.select('Optram_SM').unitScale(minValueOptram,maxValueOptram)
+var smap = test.select('Smap_SM').unitScale(minValueSmap,maxValueSmap).updateMask(optram)//.subtract(maxValueSmap.divide(10)))
+var CorAll= ee.Image.cat(smap,optram)
+Map.addLayer(CorAll.select('Optram_SM'), {min: 0, max: 1, palette: soilMoisturePalette}, 'OPTRAM  test')
+// Map.addLayer(CorAll,{},'CorAll')
+
+
+var optram = test.select('Optram_SM').unitScale(0,100)
+var smap = test.select('Smap_SM').unitScale(0,1).updateMask(optram)//.subtract(maxValueSmap.divide(10)))
+var nat = ee.Image.cat(smap,optram)
+
+
+// extracting pixel values
+var imCor = test /// CorAll for adjusted scale or nat for native scale 
+var pixelVals = imCor.select(['Smap_SM','Optram_SM']).reduceRegion(
+    {reducer: ee.Reducer.toList(), geometry: test.geometry(), scale: 8905.559263461886}) //SMAP scale;
+
+// print the dictionary object to the console to check observations
+print(ee.List(pixelVals));
+
+//  Prepare values to be plotted along x and y axes
+// get values from dictionary and make lists
+var x = ee.List(pixelVals.get('Smap_SM'));
+// x = x.removeAll(ee.List(x.get(0)))
+var y = ee.List(pixelVals.get('Optram_SM')).slice(0, sliceP);
+
+print(ee.List(pixelVals));
+
+// Define the chart and print it to the console.
+var chartCorrle = ui.Chart.array.values({array: y, axis: 0, xLabels: x}).setOptions({
+  title: 'Correlation Smap_SM & Optram_SM  aggregated to smapScale m pixel',
+  colors: ['234f1c'],
+  hAxis: {
+    title: 'Smap_SM',
+    titleTextStyle: {italic: false, bold: true},
+    gridlines: {color: 'FFFFFF'},
+    viewWindow: {min: 0, max: 1}
+  },
+  vAxis: {
+    title: 'Optram_SM',
+    titleTextStyle: {italic: false, bold: true},
+    gridlines: {color: 'FFFFFF'},
+    baselineColor: {color: 'FFFFFF'},
+   // viewWindow: {min: 0, max: 1}
+  },
+  pointSize: 2,
+  pointShape: 'circle', //'diamond', 'triangle', 'square', 'star', or 'polygon'
+  dataOpacity: 0.4,
+legend: {position: 'none'},
+  trendlines: { 0: {  // add a trend line to the 1st series
+      type: 'linear',  // or 'polynomial', 'exponential', 'linear'
+      color: 'c20000',
+      lineWidth: 1,
+      visibleInLegend: true},
+      1: {showR2: true, visibleInLegend: true, color: 'E37D05', lineWidth: 4,
+  lineDashStyle: [4, 4]} 
+  },
+    
+  chartArea: {backgroundColor: 'EBEBEB'}
+});
+
+print(chartCorrle);
+
+//Check linear fit
+print('Linear fit output Optram_SM & Smap_SM',
+          ee.Array.cat([x, y], 1).reduce(ee.Reducer.linearFit(),[0],1));
+
+
+// Get Correlation values
+
+print(test.get('correlation'),test.get('p-value'), 'Correlation and P-value for test image');
+
+
+
+//                  ###  Calculate RMSE, rRMSE, and delta ###
+
+// transfer the values to arrays
+var N = ee.Array(x);
+var NN = ee.Array(y);
+
+// Calculate the RMSE
+var RMSE = (N.subtract(NN)).pow(2);       // array calculations
+RMSE = RMSE.reduce('sum', [0]).get([0]);  // reduce the array to the sum -> output is a ee.Number()
+RMSE = RMSE.divide(N.length().get([0]));    // divide by the amount of observations
+RMSE = RMSE.sqrt();                       // Get the RMSE
+
+print(RMSE, 'RMSE');
+
+//rRMSE
+// Average value of CHM observed
+var avCHM = N.reduce('mean', [0]).get([0]);
+var rRMSE = RMSE.divide(avCHM);
+print(rRMSE, 'rRMSE %');
+
+
+// Calculate the delta Mean
+var d = N.subtract(NN);
+var d = d.abs();
+var d = d.reduce('mean', [0]).get([0]);
+print(d, 'mean Delta');
+
+
+
