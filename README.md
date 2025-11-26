@@ -1,9 +1,9 @@
-#IrrigationExtentMapping
+# IrrigationExtentMapping
 
 Scripts implementing a full Google Earth Engine workflow for mapping irrigation extent using Landsat imagery and OPTRAM soil moisture (Sadeghi et al., 2017), without relying on training data.
 The workflow is modular, allowing you to run the entire pipeline or individual steps depending on your needs.
 
-#Overview
+# Overview
 
 This repository provides tools to:
 
@@ -11,92 +11,88 @@ Derive OPTRAM soil-moisture parameters for any Landsat WRS Path/Row (2000–2024
 
 Compute OPTRAM soil moisture for each Landsat image
 
-Compare OPTRAM soil moisture to SMAP for quality control
+Compare OPTRAM soil moisture to SMAP for optional quality control
 
-Map irrigation extent annually
+Map annual irrigation extent
 
-Design and run accuracy assessments
+Design sampling and perform accuracy assessments
 
 All scripts are written for use in Google Earth Engine (GEE).
 
-#Repository Structure
-01_CalculateSM_OptramParameters
+# Repository Structure
+## 01_CalculateSM_OptramParameters
 
-Calculates OPTRAM soil-moisture parameters for a specified WRS Path/Row.
+Calculates OPTRAM soil-moisture parameters for a specified WRS Path and Row.
 
 Uses the stepwise SRT–NDVI relationship
 
-Fits a linear model to estimate OPTRAM parameters (iw, id, sd, sw, vw, wv)
+Fits a linear model to estimate the parameters iw, id, sd, sw, vw, and wv
 
-Parameters are computed for each year from 2000–2024 using two years of Landsat data
+Computes parameters for each year from 2000–2024 using two years of Landsat data
 
-Output: FeatureCollection of OPTRAM parameters for all years
+Output: A FeatureCollection containing OPTRAM parameters for each year
 
-02_RawLandsatToSM_Optram
+## 02_RawLandsatToSM_Optram
 
-Quality-control step (optional).
-Computes OPTRAM soil moisture for every Landsat image in the selected footprint.
+Optional quality-control step that computes OPTRAM soil moisture for every Landsat image in the selected footprint.
 
-Requires parameter file from Step 01
+Requires the parameter file generated in Step 01
 
-Inputs: year, WRS path, WRS row
+Inputs: year, WRS path, and WRS row
 
-Output: OPTRAM soil-moisture image for each Landsat acquisition in the chosen year
+Output: OPTRAM soil-moisture images for each Landsat acquisition in that year
 
-03_CompareOptramSMToSMAP
+## 03_CompareOptramSMToSMAP
 
-Quality-control step (optional).
-Compares OPTRAM soil moisture (Step 02) with SMAP soil moisture.
+Optional quality-control step comparing OPTRAM soil moisture (Step 02) to SMAP soil moisture.
 
-Matches each OPTRAM SM image with SMAP on the same date
+Matches OPTRAM SM images with SMAP data on the same dates
 
-Aggregates OPTRAM SM to SMAP pixel scale
+Aggregates OPTRAM SM to SMAP pixel size
 
 Computes R², RMSE, p-value, slope, and intercept
 
-Optional: generate scatter plots
+Supports optional generation of per-image scatterplots
 
 Covers all years from 2000–2024
 
-04_OptramSMToIrrigationExtent
+## 04_OptramSMToIrrigationExtent
 
-Main step for mapping irrigation extent.
+Main script for generating irrigation-extent maps.
 
-Uses OPTRAM SM computed on the fly (Step 01) or pre-computed SM (Step 02)
+Uses OPTRAM soil moisture calculated from Step 01 parameters or pre-computed soil moisture from Step 02
 
-Output: Yearly categorical raster with values:
+Output: Annual raster classification with the following codes:
 
 0 = Not irrigated
 
 1 = Irrigated in summer
 
-2 = Irrigated all years
+2 = Irrigated every year
 
 3 = Irrigated in winter
 
-05_AccuracyAssessment_SamplingDesign
+## 05_AccuracyAssessment_SamplingDesign
 
-Quality-control step (optional).
-Generates random reference points for accuracy assessment.
+Optional quality-control step that generates random reference points for accuracy assessment.
 
-06_AccuracyAssessment_ResponseDesign
+## 06_AccuracyAssessment_ResponseDesign
 
-Quality-control step (optional).
-Documentation and design for labeling reference points.
+Optional quality-control step documenting the response-design process used to label reference points.
 
-07_AccuracyAssessment_Analysis
+## 07_AccuracyAssessment_Analysis
 
-Quality-control step (optional).
-Computes accuracy metrics for dry-season irrigation extent for each year.
+Optional quality-control step that computes accuracy metrics for dry-season irrigation extent for each year.
 
 Requires labeled reference points
 
 Outputs include overall accuracy, F-score, and user/producer accuracy for irrigated and non-irrigated classes
 
-License
+# License
 
-See LICENSE.md for details.
+See LICENSE.md for terms of use.
 
-Summary
+# Summary
 
-This repository provides a complete and reproducible workflow for mapping irrigation extent using OPTRAM soil moisture and Landsat time series without training data. Scripts can be used sequentially or independently depending on your application.
+This repository provides a complete, reproducible workflow for mapping irrigation extent using OPTRAM soil moisture and Landsat time series without training data.
+Each step can be run independently, or the full pipeline can be executed end-to-end depending on your needs.
