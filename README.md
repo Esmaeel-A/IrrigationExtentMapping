@@ -35,6 +35,7 @@ Fits a linear model to estimate the parameters iw, id, sd, sw, vw, and wv
 Computes parameters for each year from 2000–2024 using two years of Landsat data
 
 Output: A FeatureCollection containing OPTRAM parameters for each year
+Find the file OptramParsameters.csv for all pre-calculated pararmeters than can be used directly in step 04 
 
 ## 02_RawLandsatToSM_Optram
 
@@ -64,7 +65,7 @@ Covers all years from 2000–2024
 
 Main script for generating irrigation-extent maps.
 
-Uses OPTRAM soil moisture calculated from Step 01 parameters or pre-computed soil moisture from Step 02
+Uses OPTRAM soil moisture parameters calculated from Step 01 (OptramParsameters.csv) Or saved soil moisture from Step 02
 
 Output: Annual raster classification with the following codes:
 
