@@ -1,0 +1,117 @@
+
+//######################################################################################
+//#### Kent State University - SenslandLab - 2025 ####
+//### Esmaeel Adrah eadrah@kent.edu ###
+// this is a quality control step; 
+// This code calculate the accuracy assessment for all dry season irrigation extent for each year
+//  it requires a file containing the reference points
+// it output overall accuracy, F-score, user and producer accuracy for both irrigated and non-irrigated
+//######################################################################################
+
+
+var eventsS = imageCollection.map(function(img){return img.remap([0,1,2,3],[0,1,1,0])})
+var eventsB = imageCollection.map(function(img){return img.remap([0,1,2,3],[0,1,0,0])})
+var years = [2000,2001,2002,2003,2004,2005,2006,2007,2008,2009,2010,2011,
+2012,2013,2014,2015,2016,2017,2018,2019,2020,2021,2022,2023,2024]
+var ProcessedCollection = ee.ImageCollection(years.map(function(p) {
+    var image = eventsS.filter(ee.Filter.eq('year',p)).max()
+    
+// count patch sizes
+var patchsize = image.connectedPixelCount(80, true);
+
+// run a majority filter
+var filtered = image.focal_mode({
+    radius: 90,
+    kernelType: 'square',
+    units: 'meters',
+}); 
+  
+// updated image with majority filter where patch size is small
+var connectedClassified =  image.where(patchsize.lt(50),filtered);
+return connectedClassified.set('year',p)
+}))
+
+
+var cropMask = ee.Image('projects/ee-hyinhe/assets/Jesse/Syria/workspace/Abandonment_all').gt(0)
+// var year = 2023
+years.map(calcAccuracy)
+function calcAccuracy(year) {
+var yearlyImage = ProcessedCollection.filter(ee.Filter.eq('year',year)).max().rename('class').updateMask(cropMask)
+
+    var soilMoisturePalette = ['brown', 'orange', 'yellow', 'green', 'blue'];
+    
+
+Map.addLayer(yearlyImage, {
+    //     min: 0,
+    // max: 1,
+    palette: soilMoisturePalette}, 'yearlyImage_'+year,false);
+    
+    
+    
+var TData = //ee.FeatureCollection('projects/water-middleeast/assets/ALL_cleaned_reference')
+ee.FeatureCollection('projects/water-middleeast/assets/reference_formatted4')
+
+var Rainfed = TData.filter(ee.Filter.eq(year.toString(),1))
+Rainfed = Rainfed.map(function(g){
+  return g.set(year.toString(),0)
+})
+
+Map.addLayer(Rainfed,{'color': 'red'},'rainfed',false)
+var Irrigated = TData.filter(ee.Filter.eq(year.toString(),3))
+Irrigated = Irrigated.map(function(g){
+  return g.set(year.toString(),1)
+})
+
+Map.addLayer(Irrigated,{'color': 'blue'},'Irrigated',false)
+var IrrigatedNotSure = TData.filter(ee.Filter.eq(year.toString(),2))
+IrrigatedNotSure = IrrigatedNotSure.map(function(g){
+  return g.set(year.toString(),1)
+})
+
+Map.addLayer(IrrigatedNotSure,{'color': 'green'},'IrrigatedNotSure',false)
+// Map.addLayer(TData)
+// print(TData.filter(ee.Filter.gte(year.toString(),1)).aggregate_histogram(year.toString()),'year statistics_'+year)
+// var validationD = Rainfed.merge(Irrigated)//.select(year.toString())
+
+var validationD = Rainfed.merge(Irrigated)//.merge(IrrigatedNotSure)
+print(validationD.aggregate_histogram(year.toString()),' #########################################year statistics_'+year)
+// print(validationD)
+
+
+//Accuracy assessment #####################
+
+//Accuracy assessment
+
+// sample the validation data 
+var validation = yearlyImage.sampleRegions({
+  collection: validationD,
+  properties: [year.toString()],
+  scale: 30,
+});
+print('Validation:', validation);
+
+
+
+//Compare vaidation(truth) and  the classification result
+
+var ErrorMatix = validation.errorMatrix(year.toString(), 'class');
+
+
+//Print the error matrix to the console
+// print('Error matrix: ', ErrorMatix);
+
+//get and print the accuracy statistics: the overall accuracy and kappa
+var OverAllAccuracy = ErrorMatix.accuracy();
+print('Overall Accuracy: ', OverAllAccuracy);
+
+var fscore = ErrorMatix.fscore();
+print('Validation fscore', fscore);
+
+
+//Confusion matrix from the training data
+// var confusionMatrix = classifier.confusionMatrix();
+print('consumersAccuracy ', ErrorMatix.consumersAccuracy());
+
+print('producersAccuracy ', ErrorMatix.producersAccuracy());
+
+}
